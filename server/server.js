@@ -1,20 +1,33 @@
-import express from 'express'
-import mysql from 'mysql'
-import cors from 'cors'
+import express from 'express';
+import mysql from 'mysql';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
+import dotenv from 'dotenv'
 
+dotenv.config() //ensure functional authentication
 const app = express();
 
-app.use(cors()); /*allows cross origin resource sharing 
-allows server to load information from an "outside" server
-*/
-app.use(express.json())
+// Middleware to verify JWT
+const verifyToken = (req, res, next) => {
+    const token = req.headers['authorization'];
+    if (!token) return res.status(403).json({ error: 'No token provided' });
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+        if (err) return res.status(500).json({ error: 'Failed to authenticate token' });
+        req.username = decoded.username;
+        next();
+    });
+};
+
+app.use(cors()); // allows cross-origin resource sharing
+app.use(express.json());
 
 const db = mysql.createConnection({
     host: 'localhost',
     user: "root",
     password: "",
     database: "crud"
-})
+});
 
 app.put('/edit/:username', (req, res) => {
     const sql = "UPDATE employees SET username=?, password=?, email=?, firstname=?, lastname=?, position=? WHERE username=?";
@@ -28,7 +41,7 @@ app.put('/edit/:username', (req, res) => {
         req.body.position,
         username
     ];
-    
+
     db.query(sql, values, (err, result) => {
         if (err) {
             console.error('Error executing query:', err);
@@ -38,32 +51,26 @@ app.put('/edit/:username', (req, res) => {
     });
 });
 
+app.get('/home', (req, res) => {
+    const sql = "SELECT * from employees";
+    db.query(sql, (err, result) => {
+        if (err) return res.json({ Message: "Error inside server" }) && console.log(err);
 
-app.get('/', (req, res) => {
-    const sql = "SELECT * from employees"
-    db.query(sql,(err, result) =>{
-        if(err) return (res.json({Message: "error inside server"}) && console.log(err))
-        
-        console.log(result)
-        return res.json(result)
-    })
-})
+        console.log(result);
+        return res.json(result);
+    });
+});
 
 app.get('/read/:username', (req, res) => {
-    const sql = "SELECT * from employees WHERE username = ?"
-    const username = req.params.username
-     
-    db.query(sql, [username], (err, result) =>{
-        if(err) return res.json({Message: "error inside server"})
-        console.log(result)
-        return res.json(result)
-    })
-})
+    const sql = "SELECT * from employees WHERE username = ?";
+    const username = req.params.username;
 
-app.listen(8081, ()=> {
-    console.log("listening");
-    
-})
+    db.query(sql, [username], (err, result) => {
+        if (err) return res.json({ Message: "Error inside server" });
+        console.log(result);
+        return res.json(result);
+    });
+});
 
 app.post('/employees', (req, res) => {
     const sql = "INSERT INTO employees (username, password, email, firstname, lastname, position) VALUES (?)";
@@ -87,7 +94,8 @@ app.post('/employees', (req, res) => {
 
 app.delete('/delete/:username', (req, res) => {
     const sql = "DELETE FROM employees WHERE username = ?";
-params.username;
+    const username = req.params.username;
+
     db.query(sql, [username], (err, result) => {
         if (err) {
             console.error('Error executing query:', err);
@@ -99,23 +107,22 @@ params.username;
 
 app.post('/signin', async (req, res) => {
     const { username, password } = req.body;
-    const jwt = require('jsonwebtoken')
     const sql = 'SELECT * FROM employees WHERE username = ?';
     db.query(sql, [username], async (err, result) => {
         if (err) {
             console.error('Error executing query:', err);
-            return res.status(500).json({ error: 'username doesn\'t exist' });
+            return res.status(500).json({ error: 'Username doesn\'t exist' });
         }
         if (result.length > 0) {
             // User found, compare the hashed password
             const user = result[0];
             if (user.password === password) {
-                res.status(200).json({ message: 'Sign-in successful', user });
                 const jwtToken = jwt.sign(
-                    {id: user, username: username},
-                    process.env.JWT_SECRET
+                    { username: username },
+                    process.env.JWT_SECRET,
+                    { expiresIn: '1h' } // Token expires in 1 hour
                 );
-                res.json({mess: "welcom back!", token: jwtToken});
+                res.json({ message: "Welcome back!", token: jwtToken });
             } else {
                 res.status(401).json({ error: 'Invalid username or password' });
             }
@@ -123,4 +130,70 @@ app.post('/signin', async (req, res) => {
             res.status(401).json({ error: 'Invalid username or password' });
         }
     });
+});
+
+// New search endpoint
+app.get('/search', (req, res) => {
+    const searchTerm = req.query.q;
+    const sql = "SELECT * FROM employees WHERE username LIKE ? OR firstname LIKE ? OR lastname LIKE ? OR position LIKE ?";
+    const values = [`%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`];
+
+    db.query(sql, values, (err, result) => {
+        if (err) {
+            console.error('Error executing query:', err);
+            return res.status(500).json({ error: 'Internal Server Error', details: err });
+        }
+        return res.json(result);
+    });
+});
+
+//clock-in and out functionality
+
+// Clock-in endpoint
+app.post('/clockin', verifyToken, (req, res) => {
+    const sql = "INSERT INTO clockins (username, date, clockin_time) VALUES (?, CURDATE(), CURTIME())";
+    db.query(sql, [req.username], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+        res.status(201).json({ message: 'Clocked in successfully', result });
+    });
+});
+
+// Lunch start endpoint
+app.post('/lunchstart', verifyToken, (req, res) => {
+    const sql = "UPDATE clockins SET lunch_start = CURTIME() WHERE username = ? AND date = CURDATE() AND lunch_start IS NULL";
+    db.query(sql, [req.username], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+        res.status(200).json({ message: 'Lunch started successfully', result });
+    });
+});
+
+// Lunch end endpoint
+app.post('/lunchend', verifyToken, (req, res) => {
+    const sql = "UPDATE clockins SET lunch_end = CURTIME() WHERE username = ? AND date = CURDATE() AND lunch_start IS NOT NULL AND lunch_end IS NULL";
+    db.query(sql, [req.username], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+        res.status(200).json({ message: 'Lunch ended successfully', result });
+    });
+});
+
+// Clock-out endpoint
+app.post('/clockout', verifyToken, (req, res) => {
+    const sql = "UPDATE clockins SET clockout_time = CURTIME() WHERE username = ? AND date = CURDATE() AND clockout_time IS NULL";
+    db.query(sql, [req.username], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+        res.status(200).json({ message: 'Clocked out successfully', result });
+    });
+});
+
+// Get clock-in/out history
+app.get('/clockhistory', verifyToken, (req, res) => {
+    const sql = "SELECT date, clockin_time, lunch_start, lunch_end, clockout_time FROM clockins WHERE username = ? ORDER BY date DESC, clockin_time DESC";
+    db.query(sql, [req.username], (err, result) => {
+        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+        res.status(200).json(result);
+    });
+});
+
+app.listen(8081, () => {
+    console.log("Server is running on port 8081");
 });
