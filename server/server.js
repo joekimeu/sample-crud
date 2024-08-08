@@ -149,40 +149,114 @@ app.get('/search', (req, res) => {
 
 //clock-in and out functionality
 
-// Clock-in endpoint
-app.post('/clockin', verifyToken, (req, res) => {
-    const sql = "INSERT INTO clockins (username, date, clockin_time) VALUES (?, CURDATE(), CURTIME())";
-    db.query(sql, [req.username], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
-        res.status(201).json({ message: 'Clocked in successfully', result });
+const getCurrentClockStatus = (username) => {
+    return new Promise((resolve, reject) => {
+        const sql = `
+            SELECT * FROM clockins 
+            WHERE username = ? AND date = CURDATE() 
+            ORDER BY clockin_time DESC LIMIT 1
+        `;
+        db.query(sql, [username], (err, result) => {
+            if (err) reject(err);
+            resolve(result[0] || null);
+        });
     });
+};
+
+app.get('/currentstatus', verifyToken, async (req, res) => {
+    try {
+        const status = await getCurrentClockStatus(req.username);
+        res.json(status);
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error', details: err });
+    }
+});
+
+// Clock-in endpoint
+app.post('/clockin', verifyToken, async (req, res) => {
+    try {
+        const status = await getCurrentClockStatus(req.username);
+        if (status && !status.clockout_time) {
+            return res.status(400).json({ error: 'Already clocked in' });
+        }
+        
+        const sql = "INSERT INTO clockins (username, date, clockin_time) VALUES (?, CURDATE(), CURTIME())";
+        db.query(sql, [req.username], (err, result) => {
+            if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+            res.status(201).json({ message: 'Clocked in successfully', result });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error', details: err });
+    }
 });
 
 // Lunch start endpoint
-app.post('/lunchstart', verifyToken, (req, res) => {
-    const sql = "UPDATE clockins SET lunch_start = CURTIME() WHERE username = ? AND date = CURDATE() AND lunch_start IS NULL";
-    db.query(sql, [req.username], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
-        res.status(200).json({ message: 'Lunch started successfully', result });
-    });
+app.post('/lunchstart', verifyToken, async (req, res) => {
+    try {
+        const status = await getCurrentClockStatus(req.username);
+        if (!status || status.clockout_time) {
+            return res.status(400).json({ error: 'Not clocked in' });
+        }
+        if (status.lunch_start && !status.lunch_end) {
+            return res.status(400).json({ error: 'Already on lunch break' });
+        }
+        if (status.lunch_start && status.lunch_end) {
+            return res.status(400).json({ error: 'Lunch break already taken for this clock-in event' });
+        }
+        
+        const sql = "UPDATE clockins SET lunch_start = CURTIME() WHERE id = ?";
+        db.query(sql, [status.id], (err, result) => {
+            if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+            res.status(200).json({ message: 'Lunch started successfully', result });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error', details: err });
+    }
 });
 
 // Lunch end endpoint
-app.post('/lunchend', verifyToken, (req, res) => {
-    const sql = "UPDATE clockins SET lunch_end = CURTIME() WHERE username = ? AND date = CURDATE() AND lunch_start IS NOT NULL AND lunch_end IS NULL";
-    db.query(sql, [req.username], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
-        res.status(200).json({ message: 'Lunch ended successfully', result });
-    });
+app.post('/lunchend', verifyToken, async (req, res) => {
+    try {
+        const status = await getCurrentClockStatus(req.username);
+        if (!status || status.clockout_time) {
+            return res.status(400).json({ error: 'Not clocked in' });
+        }
+        if (!status.lunch_start) {
+            return res.status(400).json({ error: 'Lunch break not started' });
+        }
+        if (status.lunch_end) {
+            return res.status(400).json({ error: 'Lunch break already ended' });
+        }
+        
+        const sql = "UPDATE clockins SET lunch_end = CURTIME() WHERE id = ?";
+        db.query(sql, [status.id], (err, result) => {
+            if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+            res.status(200).json({ message: 'Lunch ended successfully', result });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error', details: err });
+    }
 });
 
 // Clock-out endpoint
-app.post('/clockout', verifyToken, (req, res) => {
-    const sql = "UPDATE clockins SET clockout_time = CURTIME() WHERE username = ? AND date = CURDATE() AND clockout_time IS NULL";
-    db.query(sql, [req.username], (err, result) => {
-        if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
-        res.status(200).json({ message: 'Clocked out successfully', result });
-    });
+app.post('/clockout', verifyToken, async (req, res) => {
+    try {
+        const status = await getCurrentClockStatus(req.username);
+        if (!status || status.clockout_time) {
+            return res.status(400).json({ error: 'Not clocked in' });
+        }
+        if (status.lunch_start && !status.lunch_end) {
+            return res.status(400).json({ error: 'Cannot clock out while on lunch break' });
+        }
+        
+        const sql = "UPDATE clockins SET clockout_time = CURTIME() WHERE id = ?";
+        db.query(sql, [status.id], (err, result) => {
+            if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
+            res.status(200).json({ message: 'Clocked out successfully', result });
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error', details: err });
+    }
 });
 
 // Get clock-in/out history
