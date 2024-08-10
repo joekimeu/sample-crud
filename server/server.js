@@ -260,9 +260,10 @@ app.post('/clockout', verifyToken, async (req, res) => {
 });
 
 // Get clock-in/out history
-app.get('/clockhistory', verifyToken, (req, res) => {
+app.get('/clockhistory/:username', verifyToken, (req, res) => {
     const sql = "SELECT date, clockin_time, lunch_start, lunch_end, clockout_time FROM clockins WHERE username = ? ORDER BY date DESC, clockin_time DESC";
-    db.query(sql, [req.username], (err, result) => {
+    const username = req.params.username;
+    db.query(sql, [username], (err, result) => {
         if (err) return res.status(500).json({ error: 'Internal Server Error', details: err });
         res.status(200).json(result);
     });
